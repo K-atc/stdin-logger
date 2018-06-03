@@ -1,0 +1,6 @@
+stdin-logger
+test/alarm
+test/argv-check
+README.html
+
+*.stdin.log
