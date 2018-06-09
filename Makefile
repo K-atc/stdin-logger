@@ -14,10 +14,12 @@ all: $(TARGET)
 
 %:%.cpp
 	g++ $(CXX_OPTIONS) -o $@ $^
+	g++ $(CXX_OPTIONS) -m32 -o $@-32 $^
 
 install: $(BIN)
 	for f in $^; do \
-		install -m 755 -o root $$f $(INSTALL_DIR); \
+		install -m 755 -o root $${f} $(INSTALL_DIR); \
+		install -m 755 -o root $${f}-32 $(INSTALL_DIR); \
 	done
 
 # uninstall: $(BIN)

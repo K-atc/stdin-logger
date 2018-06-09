@@ -1,4 +1,5 @@
 stdin-logger
+stdin-logger-32
 test/alarm
 test/argv-check
 README.html

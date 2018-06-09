@@ -16,6 +16,13 @@
 #include <fstream>
 #include <time.h>
 
+#if _WIN64 || __amd64__ // 64 bits CPU
+#define ARCH_BYTES 8
+#else // 32 bits CPU
+#define M32 1
+#define ARCH_BYTES 4
+#endif
+
 #define ALLOC_BUF(size) (malloc((count / sizeof(unsigned long)) * sizeof(unsigned long) + 1))
 
 class Logger {
@@ -70,7 +77,7 @@ void read_remote_process_memory(pid_t pid, unsigned long int addr, unsigned long
 
 void *logger = NULL;
 
-void sigint_handler(int signo) {
+void crash_handler(int signo) {
     ((Logger *)logger)->save();
     exit(1);
 }
@@ -103,7 +110,10 @@ int main(int argc, char *argv[]) {
     logger = (void *) l;
 
     // Handle SIGINT (Ctrl+C) (and child process signals?)
-    signal(SIGINT, sigint_handler);
+    signal(SIGINT, crash_handler);
+    signal(SIGABRT, crash_handler);
+    signal(SIGBUS, crash_handler);
+    signal(SIGTERM, crash_handler);
 
     child = fork();
     if(child == 0) {
@@ -117,13 +127,20 @@ int main(int argc, char *argv[]) {
         // }
 
         // start tracee
-        ptrace(PTRACE_TRACEME, 0, 8 * ORIG_RAX, NULL);
+        #ifdef M32
+        ptrace(PTRACE_TRACEME, 0, ARCH_BYTES * ORIG_EAX, NULL);
+        #else
+        ptrace(PTRACE_TRACEME, 0, ARCH_BYTES * ORIG_RAX, NULL);
+        #endif
         auto res = execvp(argv[1], &argv[1]);
         if (res) {
             perror("execvp");
         }
     }
     else {
+        if (DEBUG) {
+            printf("[*] DEBUG mode enabled\n");
+        }
         while(1) {
             wait(&status);
 
@@ -143,11 +160,19 @@ int main(int argc, char *argv[]) {
             // }
 
             // %rax System call %rdi    %rsi    %rdx    %r10    %r8 %r9
-            orig_rax = ptrace(PTRACE_PEEKUSER, child, 8 * ORIG_RAX, NULL);
-            rax = ptrace(PTRACE_PEEKUSER, child, 8 * RAX, NULL);
-            params[0] = ptrace(PTRACE_PEEKUSER, child, 8 * RDI, NULL);
-            params[1] = ptrace(PTRACE_PEEKUSER, child, 8 * RSI, NULL);
-            params[2] = ptrace(PTRACE_PEEKUSER, child, 8 * RDX, NULL);
+            #ifdef M32
+            orig_rax = ptrace(PTRACE_PEEKUSER, child, ARCH_BYTES * ORIG_EAX, NULL);
+            rax = ptrace(PTRACE_PEEKUSER, child, ARCH_BYTES * EAX, NULL);
+            params[0] = ptrace(PTRACE_PEEKUSER, child, ARCH_BYTES * EBX, NULL);
+            params[1] = ptrace(PTRACE_PEEKUSER, child, ARCH_BYTES * ECX, NULL);
+            params[2] = ptrace(PTRACE_PEEKUSER, child, ARCH_BYTES * EDX, NULL);
+            #else
+            orig_rax = ptrace(PTRACE_PEEKUSER, child, ARCH_BYTES * ORIG_RAX, NULL);
+            rax = ptrace(PTRACE_PEEKUSER, child, ARCH_BYTES * RAX, NULL);
+            params[0] = ptrace(PTRACE_PEEKUSER, child, ARCH_BYTES * RDI, NULL);
+            params[1] = ptrace(PTRACE_PEEKUSER, child, ARCH_BYTES * RSI, NULL);
+            params[2] = ptrace(PTRACE_PEEKUSER, child, ARCH_BYTES * RDX, NULL);
+            #endif
 
             if(orig_rax == SYS_read) {
                 if(insyscall == 0) { /* Syscall entry */
@@ -169,6 +194,7 @@ int main(int argc, char *argv[]) {
                     insyscall = 0;
                 }
             }
+
             else if(orig_rax == SYS_write) {
                 unsigned long int count = params[2];
                 char* buf = (char *) ALLOC_BUF(count);
@@ -180,13 +206,13 @@ int main(int argc, char *argv[]) {
                     //        params[0], params[1], buf, params[2]);
                 }
                 else { /* Syscall exit */
-                    rax = ptrace(PTRACE_PEEKUSER, child, 8 * RAX, NULL);
                     if (DEBUG) printf("sys_write(%ld, %p '%s', %ld) = %ld\n",
                         params[0], params[1], buf, params[2], rax);
                     insyscall = 0;
                 }
                 free(buf);
             }
+
             // else if(orig_rax == SYS_stat) {
             //     if(insyscall == 0) { /* Syscall entry */
             //         insyscall = 1;
@@ -207,16 +233,19 @@ int main(int argc, char *argv[]) {
             //         insyscall = 0;
             //     }
             // }
+
             else if(orig_rax == SYS_exit) {
                 if (DEBUG) printf("sys_exit(%ld)\n", params[0]);
                 l->save();
                 break;
             }
+
             else if(orig_rax == SYS_exit_group) {
                 if (DEBUG) printf("sys_exit_group(%ld)\n", params[0]);
                 l->save();
                 break;
             }
+
             else if(orig_rax == SYS_ioprio_get) {
                 if (DEBUG) printf("sys_ioprio_get(%ld, %ld)\n", params[0], params[1]);
                 l->save();
